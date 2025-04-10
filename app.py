@@ -7,79 +7,50 @@ import google.generativeai as genai
 import requests
 import time
 from PIL import Image
+import tensorflow as tf
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from tensorflow.keras.preprocessing import image
 import numpy as np
-from io import BytesIO
-import base64
-import mimetypes
 
 # Configure Gemini API
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-model = genai.GenerativeModel("gemini-pro-vision")
-chat_model = genai.GenerativeModel("gemini-pro")
-chat = chat_model.start_chat(history=[])
+model = genai.GenerativeModel("gemini-pro")
+chat = model.start_chat(history=[])
 
-# Function to detect disease from an uploaded image using Gemini Vision
-def detect_disease_from_image(img):
-    try:
-        # Convert PIL Image to bytes
-        buffered = BytesIO()
-        img.save(buffered, format="JPEG")
-        img_bytes = buffered.getvalue()
-        
-        # Prepare the image part
-        image_parts = [
-            {
-                "mime_type": "image/jpeg",
-                "data": base64.b64encode(img_bytes).decode()
-            }
-        ]
-        
-        # Prepare prompt
-        prompt_parts = [
-            "Analyze this crop image and identify any visible diseases or problems.",
-            "Focus specifically on agricultural diseases that affect plants.",
-            "Provide only the name of the most likely disease in a single word or short phrase.",
-            image_parts[0]
-        ]
-        
-        # Get response from Gemini Vision
-        response = model.generate_content(prompt_parts)
-        return response.text.strip()
-    except Exception as e:
-        st.error(f"Error analyzing image: {str(e)}")
-        return "unknown disease"
+# Load a pre-trained model for disease detection (e.g., MobileNetV2)
+disease_model = MobileNetV2(weights="imagenet")
 
-# Function to get Gemini text response
+# Function to detect disease from an uploaded image
+def detect_disease_from_image(image):
+    if image.mode == 'RGBA':
+        image = image.convert('RGB')
+    img = image.resize((224, 224))
+    img_array = np.array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = preprocess_input(img_array)
+    predictions = disease_model.predict(img_array)
+    decoded_predictions = tf.keras.applications.mobilenet_v2.decode_predictions(predictions, top=1)[0]
+    predicted_disease = decoded_predictions[0][1]
+    return predicted_disease
+
+# Function to get Gemini response
 def get_gemini_response(question):
     response = chat.send_message(question, stream=True)
     return response
 
-# Function to get weather data with improved error handling
+# Function to get weather data
 def get_weather_data(city_name, api_key):
-    if not api_key:
-        st.error("OpenWeatherMap API key is missing. Please check your .env file.")
-        return None
-
     base_url = "http://api.openweathermap.org/data/2.5/weather"
     params = {
         "q": city_name,
         "appid": api_key,
         "units": "metric"
     }
-    
-    try:
-        response = requests.get(base_url, params=params)
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 401:
-            st.error("Invalid OpenWeatherMap API key. Please check your key and try again.")
-        elif response.status_code == 404:
-            st.error(f"City '{city_name}' not found. Please check the city name.")
-        else:
-            st.error(f"Failed to fetch weather data. Error code: {response.status_code}")
-        return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"Network error occurred while fetching weather data: {str(e)}")
+    response = requests.get(base_url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
         return None
 
 # Initialize session state variables
@@ -115,12 +86,6 @@ if 'is_first_report_generated' not in st.session_state:
 
 if 'view_kannada' not in st.session_state:
     st.session_state['view_kannada'] = False
-
-if 'detected_disease' not in st.session_state:
-    st.session_state['detected_disease'] = ""
-
-if 'city_name' not in st.session_state:
-    st.session_state['city_name'] = "Bangalore"
 
 # Cooldown period in seconds
 COOLDOWN_PERIOD = 300
@@ -162,37 +127,29 @@ def translate_text(text, target_language):
             translated_text += chunk.text
     return translated_text
 
-# Labels dictionary
-labels = {
-    'header': "AgriTech Titans",
-    'input_label': "Input:",
-    'city_label': "Enter your city name for weather data:",
-    'generate_button': "Generate Report",
-    'next_day_button': "Next Day Report",
-    'show_history_button': "Show History",
-    'translate_button': "Translate Report to Kannada",
-    'weather_header': "Weather in",
-    'report_title': "Day {} Report",
-    'next_day_header': "The Next Day Report is",
-    'translated_header': "Translated Report (Kannada)",
-    'no_report_warning': "No report available to translate.",
-    'no_response_warning': "No response was generated. Try simplifying your request.",
-    'weather_error': "Failed to fetch weather data. Please check the city name or API key.",
-    'cooldown_warning': "You can only generate a report once every 5 minutes. Please wait.",
-    'api_limit_warning': "You have exceeded the maximum number of API calls. Please wait before making another request.",
-    'view_kannada_button': "View Report in Kannada",
-    'view_english_button': "View Report in English",
-    'api_key_missing': "OpenWeatherMap API key is missing. Please check your .env file.",
-    'invalid_api_key': "Invalid OpenWeatherMap API key. Please check your key and try again.",
-    'city_not_found': "City not found. Please check the city name.",
-}
-
 # Function to apply translations
 def apply_translations():
     global labels
-    if st.session_state['language'] == 'kn':
-        for key in labels:
-            labels[key] = translate_text(labels[key], 'kn')
+    labels = {
+        'header': translate_text("AgriTech Titans", st.session_state['language']),
+        'input_label': translate_text("Input:", st.session_state['language']),
+        'city_label': translate_text("Enter your city name for weather data:", st.session_state['language']),
+        'generate_button': translate_text("Generate Report", st.session_state['language']),
+        'next_day_button': translate_text("Next Day Report", st.session_state['language']),
+        'show_history_button': translate_text("Show History", st.session_state['language']),
+        'translate_button': translate_text("Translate Report to Kannada", st.session_state['language']),
+        'weather_header': translate_text("Weather in", st.session_state['language']),
+        'report_title': translate_text("Day {} Report", st.session_state['language']),
+        'next_day_header': translate_text("The Next Day Report is", st.session_state['language']),
+        'translated_header': translate_text("Translated Report (Kannada)", st.session_state['language']),
+        'no_report_warning': translate_text("No report available to translate.", st.session_state['language']),
+        'no_response_warning': translate_text("No response was generated. Try simplifying your request.", st.session_state['language']),
+        'weather_error': translate_text("Failed to fetch weather data. Please check the city name or API key.", st.session_state['language']),
+        'cooldown_warning': translate_text("You can only generate a report once every 5 minutes. Please wait.", st.session_state['language']),
+        'api_limit_warning': translate_text("You have exceeded the maximum number of API calls. Please wait before making another request.", st.session_state['language']),
+        'view_kannada_button': translate_text("View Report in Kannada", st.session_state['language']),
+        'view_english_button': translate_text("View Report in English", st.session_state['language']),
+    }
 
 # Apply translations initially
 apply_translations()
@@ -202,14 +159,14 @@ st.set_page_config(page_title="AgriTech Titans", layout="wide")
 
 # Sidebar for language selection and actions
 with st.sidebar:
-    st.markdown("### " + translate_text("Select Language", st.session_state['language']))
-    if st.button(translate_text("English", st.session_state['language'])):
+    st.markdown("### Select Language")
+    if st.button("English"):
         if st.session_state['language'] != 'en':
             st.session_state['language'] = 'en'
             apply_translations()
             st.rerun()
 
-    if st.button(translate_text("ಕನ್ನಡ (Kannada)", st.session_state['language'])):
+    if st.button("ಕನ್ನಡ (Kannada)"):
         if st.session_state['language'] != 'kn':
             st.session_state['language'] = 'kn'
             apply_translations()
@@ -222,7 +179,7 @@ with st.sidebar:
         current_day = st.session_state['current_day']
         if f'day{current_day}' in st.session_state['daily_suggestions']:
             text_to_translate = st.session_state['daily_suggestions'][f'day{current_day}']
-            translation_prompt = f"Translate the following agricultural report into Kannada while keeping all technical terms accurate: {text_to_translate}"
+            translation_prompt = f"Translate the following text into Kannada language only .If the report is in english translate to english: {text_to_translate}"
             response = get_gemini_response(translation_prompt)
 
             st.session_state['daily_suggestions'][f'day{current_day}_kannada'] = ""
@@ -230,51 +187,44 @@ with st.sidebar:
                 if hasattr(chunk, "text"):
                     st.session_state['daily_suggestions'][f'day{current_day}_kannada'] += chunk.text
 
-            st.success(translate_text("Report translated to Kannada!", st.session_state['language']))
+            st.success("Report translated to Kannada!")
             st.session_state['view_kannada'] = True
         else:
             st.warning(labels['no_report_warning'])
 
     if st.session_state['show_history']:
-        st.markdown("### " + translate_text("Chat History", st.session_state['language']))
+        st.markdown("### Chat History")
         for role, text in st.session_state['chat_history']:
-            st.markdown(f"**{role}:** {text}")
+            st.markdown(f"{role}:** {text}", unsafe_allow_html=True)
 
 # Main content
 st.header(labels['header'])
 
 # Add an image upload feature in Streamlit
-st.sidebar.header(translate_text("Upload Crop Image", st.session_state['language']))
-uploaded_image = st.sidebar.file_uploader(translate_text("Upload an image of the diseased crop", st.session_state['language']), type=["jpg", "jpeg", "png"])
+st.sidebar.header("Upload Crop Image")
+uploaded_image = st.sidebar.file_uploader("Upload an image of the diseased crop", type=["jpg", "jpeg", "png"])
 
 # Process the uploaded image and detect disease
 if uploaded_image:
-    st.image(uploaded_image, caption=translate_text("Uploaded Crop Image", st.session_state['language']), use_column_width=True)
+    st.image(uploaded_image, caption="Uploaded Crop Image", use_column_width=True)
     image = Image.open(uploaded_image)
-    st.session_state['detected_disease'] = detect_disease_from_image(image)
-    default_input_text = translate_text(
-        f"Provide detailed agricultural solutions for {st.session_state['detected_disease']} including:\n1. Recommended organic and chemical treatments\n2. Application methods and schedules\n3. Weather-appropriate precautions\n4. Preventive measures\n5. Expected recovery timeline\n\nConsider current weather conditions in {st.session_state['city_name']} when making recommendations.",
-        st.session_state['language']
-    )
-    st.text(translate_text(f"Detected Disease: {st.session_state['detected_disease']}", st.session_state['language']))
+    detected_disease = detect_disease_from_image(image)
+    default_input_text = f"Provide agricultural solutions for the disease |{detected_disease}| and suggest fertilizers. Provide detailed usage instructions for the first 5 days, considering real-time weather conditions in your location. Focus only on agriculture and farming-related advice."
+    st.text("Detected Disease: " + detected_disease)
 else:
-    default_input_text = translate_text(
-        "Provide detailed agricultural solutions for |disease name| including:\n1. Recommended organic and chemical treatments\n2. Application methods and schedules\n3. Weather-appropriate precautions\n4. Preventive measures\n5. Expected recovery timeline\n\nConsider current weather conditions when making recommendations.",
-        st.session_state['language']
-    )
+    default_input_text = "Provide agricultural solutions for the disease |disease name| and suggest fertilizers. Provide detailed usage instructions for the first 5 days, considering real-time weather conditions in your location. Focus only on agriculture and farming-related advice."
 
 # User input and city input
-user_input = st.text_area(
+user_input = st.text_input(
     labels['input_label'],
     key="input",
-    value=default_input_text,
-    height=150
+    value=translate_text(default_input_text, st.session_state['language'])
 )
 
-st.session_state['city_name'] = st.text_input(
+city_name = st.text_input(
     labels['city_label'],
     key="city_input",
-    value=translate_text(st.session_state['city_name'], st.session_state['language'])
+    value=translate_text("Bangalore", st.session_state['language'])
 )
 
 # Buttons for generating report and next day report
@@ -290,20 +240,12 @@ with col1:
             st.session_state['last_report_time'] = time.time()
             st.session_state['view_kannada'] = False
 
-            weather_data = get_weather_data(st.session_state['city_name'], os.getenv("OPENWEATHERMAP_API_KEY"))
+            weather_data = get_weather_data(city_name, os.getenv("OPENWEATHERMAP_API_KEY"))
             if weather_data:
                 weather_description = weather_data['weather'][0]['description']
                 temperature = weather_data['main']['temp']
                 humidity = weather_data['main']['humidity']
-                wind_speed = weather_data['wind']['speed']
-                weather_info = (
-                    f"Current weather in {st.session_state['city_name']}:\n"
-                    f"- Conditions: {weather_description}\n"
-                    f"- Temperature: {temperature}°C\n"
-                    f"- Humidity: {humidity}%\n"
-                    f"- Wind speed: {wind_speed} m/s\n\n"
-                    "Provide agricultural recommendations that account for these weather conditions."
-                )
+                weather_info = f"Weather in {city_name}: {weather_description}, Temperature: {temperature}°C, Humidity: {humidity}%"
             else:
                 weather_info = labels['weather_error']
 
@@ -317,7 +259,7 @@ with col1:
 
             st.session_state['chat_history'].append(("User", user_input))
             st.session_state['chat_history'].append(("AgriTech Titans", st.session_state['daily_suggestions'][f'day{st.session_state["current_day"]}']))
-            st.success(translate_text("Report generated successfully!", st.session_state['language']))
+            st.success("Report generated successfully!")
         else:
             st.warning(labels['api_limit_warning'])
 
@@ -330,24 +272,16 @@ with col2:
                 st.session_state['last_report_time'] = time.time()
                 st.session_state['view_kannada'] = False
 
-                weather_data = get_weather_data(st.session_state['city_name'], os.getenv("OPENWEATHERMAP_API_KEY"))
+                weather_data = get_weather_data(city_name, os.getenv("OPENWEATHERMAP_API_KEY"))
                 if weather_data:
                     weather_description = weather_data['weather'][0]['description']
                     temperature = weather_data['main']['temp']
                     humidity = weather_data['main']['humidity']
-                    wind_speed = weather_data['wind']['speed']
-                    weather_info = (
-                        f"Current weather in {st.session_state['city_name']}:\n"
-                        f"- Conditions: {weather_description}\n"
-                        f"- Temperature: {temperature}°C\n"
-                        f"- Humidity: {humidity}%\n"
-                        f"- Wind speed: {wind_speed} m/s\n\n"
-                        "Provide agricultural recommendations that account for these weather conditions."
-                    )
+                    weather_info = f"Weather in {city_name}: {weather_description}, Temperature: {temperature}°C, Humidity: {humidity}%"
                 else:
                     weather_info = labels['weather_error']
 
-                prompt = f"Based on the previous day's treatment plan, provide updated recommendations for day {st.session_state['current_day']} considering:\n{weather_info}"
+                prompt = f"{user_input}\n\n{weather_info}"
                 response = get_gemini_response(prompt)
 
                 st.session_state['daily_suggestions'][f'day{st.session_state["current_day"]}'] = ""
@@ -355,58 +289,32 @@ with col2:
                     if hasattr(chunk, "text"):
                         st.session_state['daily_suggestions'][f'day{st.session_state["current_day"]}'] += chunk.text
 
-                st.session_state['chat_history'].append(("User", f"Day {st.session_state['current_day']} update"))
+                st.session_state['chat_history'].append(("User", user_input))
                 st.session_state['chat_history'].append(("AgriTech Titans", st.session_state['daily_suggestions'][f'day{st.session_state["current_day"]}']))
-                st.success(translate_text("Next day report generated successfully!", st.session_state['language']))
+                st.success("Next day report generated successfully!")
             else:
                 st.warning(labels['api_limit_warning'])
         else:
-            st.warning(translate_text("Please generate the first report before generating the next day report.", st.session_state['language']))
+            st.warning("Please generate the first report before generating the next day report.")
 
 # Display the generated report
 if st.session_state['is_first_report_generated']:
     current_day = st.session_state['current_day']
     if f'day{current_day}' in st.session_state['daily_suggestions']:
         st.markdown(f"### {labels['report_title'].format(current_day)}")
-        
         if st.session_state['view_kannada'] and f'day{current_day}_kannada' in st.session_state['daily_suggestions']:
             st.markdown(st.session_state['daily_suggestions'][f'day{current_day}_kannada'])
         else:
-            report_text = st.session_state['daily_suggestions'][f'day{current_day}']
-            
-            # Format the report with better readability
-            st.markdown("#### " + translate_text("Agricultural Recommendations", st.session_state['language']))
-            st.markdown(report_text.replace("- ", "• ").replace("\n", "  \n"))
-            
-            # Add toggle for language view
-            if f'day{current_day}_kannada' in st.session_state['daily_suggestions']:
-                if st.session_state['view_kannada']:
-                    if st.button(labels['view_english_button']):
-                        st.session_state['view_kannada'] = False
-                        st.rerun()
-                else:
-                    if st.button(labels['view_kannada_button']):
-                        st.session_state['view_kannada'] = True
-                        st.rerun()
+            st.markdown(st.session_state['daily_suggestions'][f'day{current_day}'])
     else:
         st.warning(labels['no_response_warning'])
 
 # Display weather data
-weather_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
-if not weather_api_key:
-    st.error(labels['api_key_missing'])
+weather_data = get_weather_data(city_name, os.getenv("OPENWEATHERMAP_API_KEY"))
+if weather_data:
+    st.markdown(f"### {labels['weather_header']} {city_name}")
+    st.write(f"Weather: {weather_data['weather'][0]['description']}")
+    st.write(f"Temperature: {weather_data['main']['temp']}°C")
+    st.write(f"Humidity: {weather_data['main']['humidity']}%")
 else:
-    weather_data = get_weather_data(st.session_state['city_name'], weather_api_key)
-    if weather_data:
-        st.markdown(f"### {labels['weather_header']} {st.session_state['city_name']}")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric(translate_text("Temperature", st.session_state['language']), f"{weather_data['main']['temp']}°C")
-        with col2:
-            st.metric(translate_text("Humidity", st.session_state['language']), f"{weather_data['main']['humidity']}%")
-        with col3:
-            st.metric(translate_text("Conditions", st.session_state['language']), weather_data['weather'][0]['description'].title())
-        with col4:
-            st.metric(translate_text("Wind Speed", st.session_state['language']), f"{weather_data['wind']['speed']} m/s")
-    elif weather_data is None:
-        st.warning(labels['weather_error'])
+    st.warning(labels['weather_error'])
